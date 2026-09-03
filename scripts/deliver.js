@@ -4,7 +4,7 @@
 // Follow Builders — Delivery Script
 // ============================================================================
 // Sends a digest to the user via their chosen delivery method.
-// Supports: Telegram bot, Email (via Resend), or stdout (default).
+// Supports: Telegram bot, Email (via Resend), Feishu (Lark) bot, or stdout.
 //
 // Usage:
 //   echo "digest text" | node deliver.js
@@ -17,6 +17,7 @@
 // Delivery methods:
 //   - "telegram": sends via Telegram Bot API (needs TELEGRAM_BOT_TOKEN + chat ID)
 //   - "email": sends via Resend API (needs RESEND_API_KEY + email address)
+//   - "feishu": sends via Feishu/Lark Open API (needs FEISHU_APP_ID + FEISHU_APP_SECRET + chat ID)
 //   - "stdout" (default): just prints to terminal
 // ============================================================================
 
@@ -149,6 +150,88 @@ async function sendEmail(text, apiKey, toEmail) {
   }
 }
 
+// -- Feishu/Lark Delivery ---------------------------------------------------
+
+// Gets a tenant_access_token from Feishu Open Platform.
+// The app must have the im:message:send_as_bot permission enabled.
+async function getFeishuToken(appId, appSecret) {
+  const res = await fetch(
+    'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app_id: appId, app_secret: appSecret })
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(`Feishu auth failed: HTTP ${res.status}`);
+  }
+
+  const data = await res.json();
+  if (data.code !== 0) {
+    throw new Error(`Feishu auth error: ${data.msg || JSON.stringify(data)}`);
+  }
+
+  return data.tenant_access_token;
+}
+
+// Sends the digest via Feishu interactive card (markdown rendering).
+// Card content has a ~28KB limit; if the digest exceeds 25KB we split
+// into multiple cards at newline boundaries.
+async function sendFeishu(text, token, chatId) {
+  const MAX_LEN = 25000;
+  const chunks = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= MAX_LEN) {
+      chunks.push(remaining);
+      break;
+    }
+    let splitAt = remaining.lastIndexOf('\n', MAX_LEN);
+    if (splitAt < MAX_LEN * 0.5) splitAt = MAX_LEN;
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt);
+  }
+
+  for (const chunk of chunks) {
+    const cardContent = JSON.stringify({
+      config: { wide_screen_mode: true },
+      elements: [{ tag: 'markdown', content: chunk }]
+    });
+
+    const res = await fetch(
+      'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          receive_id: chatId,
+          msg_type: 'interactive',
+          content: cardContent
+        })
+      }
+    );
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(`Feishu API error: ${err.msg || JSON.stringify(err)}`);
+    }
+
+    const data = await res.json();
+    if (data.code !== 0) {
+      throw new Error(`Feishu send error: ${data.msg || JSON.stringify(data)}`);
+    }
+
+    // Small delay between chunks to avoid rate limiting
+    if (chunks.length > 1) await new Promise(r => setTimeout(r, 500));
+  }
+}
+
 // -- Main --------------------------------------------------------------------
 
 async function main() {
@@ -194,6 +277,23 @@ async function main() {
           status: 'ok',
           method: 'email',
           message: `Digest sent to ${toEmail}`
+        }));
+        break;
+      }
+
+      case 'feishu': {
+        const appId = process.env.FEISHU_APP_ID;
+        const appSecret = process.env.FEISHU_APP_SECRET;
+        const feishuChatId = delivery.chatId;
+        if (!appId) throw new Error('FEISHU_APP_ID not found in .env');
+        if (!appSecret) throw new Error('FEISHU_APP_SECRET not found in .env');
+        if (!feishuChatId) throw new Error('delivery.chatId not found in config.json');
+        const feishuToken = await getFeishuToken(appId, appSecret);
+        await sendFeishu(digestText, feishuToken, feishuChatId);
+        console.log(JSON.stringify({
+          status: 'ok',
+          method: 'feishu',
+          message: `Digest sent to Feishu chat ${feishuChatId}`
         }));
         break;
       }

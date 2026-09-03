@@ -42,13 +42,13 @@
       "properties": {
         "method": {
           "type": "string",
-          "enum": ["stdout", "telegram", "email"],
+          "enum": ["stdout", "telegram", "email", "feishu"],
           "default": "stdout",
-          "description": "Delivery method: stdout (terminal/agent), telegram (bot message), email (via Resend)"
+          "description": "Delivery method: stdout (terminal/agent), telegram (bot message), email (via Resend), feishu (via Feishu/Lark Open API)"
         },
         "chatId": {
           "type": "string",
-          "description": "Telegram chat ID (only for telegram method)"
+          "description": "Chat/group ID for Telegram or Feishu (telegram: numeric chat ID, feishu: group chat_id from Feishu Open API)"
         },
         "email": {
           "type": "string",

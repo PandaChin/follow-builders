@@ -74,10 +74,12 @@ and move on.
 Tell the user:
 
 "Since you're not using a persistent agent, I need a way to send you the digest
-when you're not in this terminal. You have two options:
+when you're not in this terminal. You have three options:
 
 1. **Telegram** — I'll send it as a Telegram message (free, takes ~5 min to set up)
 2. **Email** — I'll email it to you (requires a free Resend account)
+3. **Feishu (飞书)** — I'll send it to a Feishu group via your company's Feishu bot
+   (requires a Feishu Open Platform app with bot capability)
 
 Or you can skip this and just type /ai whenever you want your digest — but it
 won't arrive automatically."
@@ -109,6 +111,36 @@ Then they need a Resend API key:
 
 Add the key to the .env file.
 
+**If they choose Feishu:**
+Guide the user step by step:
+1. Go to [Feishu Open Platform](https://open.feishu.cn) and log in with their
+   company account
+2. Click "Create Custom App" (创建自建应用), give it a name (e.g. "AI Builders Digest")
+3. In the app settings, go to "Bot" (机器人) under "Add Capabilities" and enable
+   the bot capability
+4. Go to "Permissions & Scopes" (权限管理), search for and enable:
+   - `im:message:send_as_bot` — send messages as the bot
+5. Go to "Version Management" (版本管理与发布), create a version and publish the
+   app (may require admin approval)
+6. In the target Feishu group, go to group settings → Bots → Add the app bot
+7. Get the group's `chat_id`:
+   - Option A: Use the [API debug console](https://open.feishu.cn/api-explorer)
+     to call `GET /im/v1/chats` and find the target group's `chat_id`
+   - Option B: Add the bot to the group, then call the API from the command line:
+   ```bash
+   # First get a token
+   TOKEN=$(curl -s -X POST 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal' \
+     -H 'Content-Type: application/json' \
+     -d "{\"app_id\": \"<APP_ID>\", \"app_secret\": \"<APP_SECRET>\"}" | python3 -c "import sys,json; print(json.load(sys.stdin)['tenant_access_token'])")
+   # Then list chats the bot is in
+   curl -s 'https://open.feishu.cn/open-apis/im/v1/chats' \
+     -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json; [print(f\"{c['chat_id']}  {c['name']}\") for c in json.load(sys.stdin)['data']['items']]"
+   ```
+8. Copy the `chat_id` (looks like `oc_xxxxxxxxxxxxxxxxxxxxxxxx`)
+
+Add the App ID, App Secret to the .env file, and save the chat_id in config.json
+under `delivery.chatId`.
+
 **If they choose on-demand:**
 Set `delivery.method` to `"stdout"`. Tell them: "No problem — just type /ai
 whenever you want your digest. No automatic delivery will be set up."
@@ -125,7 +157,7 @@ Ask: "What language do you prefer for your digest?"
 **If the user chose "stdout" or "right here" delivery:** No API keys needed at all!
 All content is fetched centrally. Skip to Step 6.
 
-**If the user chose Telegram or Email delivery:**
+**If the user chose Telegram, Email, or Feishu delivery:**
 Create the .env file with only the delivery key they need:
 
 ```bash
@@ -136,14 +168,18 @@ cat > ~/.follow-builders/.env << 'ENVEOF'
 
 # Resend API key (only if using email delivery)
 # RESEND_API_KEY=paste_your_key_here
+
+# Feishu app credentials (only if using Feishu delivery)
+# FEISHU_APP_ID=paste_your_app_id_here
+# FEISHU_APP_SECRET=paste_your_app_secret_here
 ENVEOF
 ```
 
-Uncomment only the line they need. Open the file for them to paste the key.
+Uncomment only the lines they need. Open the file for them to paste the keys.
 
 Tell the user: "All podcast and X/Twitter content is fetched for you automatically
 from a central feed — no API keys needed for that. You only need a key for
-[Telegram/email] delivery."
+[Telegram/email/Feishu] delivery."
 
 ### Step 6: Show Sources
 
@@ -176,8 +212,8 @@ cat > ~/.follow-builders/config.json << 'CFGEOF'
   "deliveryTime": "<HH:MM>",
   "weeklyDay": "<day of week, only if weekly>",
   "delivery": {
-    "method": "<stdout, telegram, or email>",
-    "chatId": "<telegram chat ID, only if telegram>",
+    "method": "<stdout, telegram, email, or feishu>",
+    "chatId": "<telegram chat ID or feishu group chat_id>",
     "email": "<email address, only if email>"
   },
   "onboardingComplete": true
@@ -261,7 +297,7 @@ Common errors and fixes:
 
 Do NOT proceed to the welcome digest step until the cron delivery has been verified.
 
-**Non-persistent agent + Telegram or Email delivery:**
+**Non-persistent agent + Telegram, Email, or Feishu delivery:**
 Use system crontab so it runs even when the terminal is closed:
 ```bash
 SKILL_DIR="<absolute path to the skill directory>"
@@ -272,7 +308,7 @@ bypassing the agent entirely. The digest won't be remixed by an LLM — it will
 deliver the raw JSON. For full remixed digests, the user should use /ai manually
 or switch to OpenClaw.
 
-**Non-persistent agent + on-demand only (no Telegram/Email):**
+**Non-persistent agent + on-demand only (no Telegram/Email/Feishu):**
 Skip cron setup entirely. Tell the user: "Since you chose on-demand delivery,
 there's no scheduled job. Just type /ai whenever you want your digest."
 
@@ -428,8 +464,9 @@ open an issue at https://github.com/zarazhangrui/follow-builders."
 - "Switch to Chinese/English/bilingual" → Update `language` in config.json
 
 ### Delivery Changes
-- "Switch to Telegram/email" → Update `delivery.method` in config.json, guide user through setup if needed
+- "Switch to Telegram/email/Feishu" → Update `delivery.method` in config.json, guide user through setup if needed
 - "Change my email" → Update `delivery.email` in config.json
+- "Change Feishu group" → Update `delivery.chatId` in config.json
 - "Send to this chat instead" → Set `delivery.method` to "stdout"
 
 ### Prompt Changes

@@ -205,7 +205,7 @@ async function generateDigestImage(text) {
 
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 800, height: 600, deviceScaleFactor: 2 });
+    await page.setViewport({ width: 900, height: 600, deviceScaleFactor: 2 });
     await page.setContent(html, { waitUntil: 'networkidle0' });
 
     const bodyHandle = await page.$('body');
@@ -269,34 +269,34 @@ function buildDigestHtml(text) {
     font-family: "Noto Sans CJK SC", "WenQuanYi Micro Hei", "Microsoft YaHei",
                  "PingFang SC", "Hiragino Sans GB", sans-serif;
     background: #fff;
-    padding: 48px 56px;
-    width: 800px;
+    padding: 56px 64px;
+    width: 900px;
     color: #000;
     -webkit-font-smoothing: antialiased;
   }
   h1 {
-    font-size: 32px;
+    font-size: 42px;
     font-weight: 800;
     color: #0050b3;
     border-bottom: 3px solid #0050b3;
     padding-bottom: 16px;
-    margin-bottom: 32px;
+    margin-bottom: 36px;
   }
   h2 {
-    font-size: 22px;
+    font-size: 30px;
     font-weight: 700;
     color: #fff;
     background: #0050b3;
     display: inline-block;
-    padding: 8px 20px;
+    padding: 10px 24px;
     border-radius: 4px;
-    margin: 36px 0 18px 0;
+    margin: 40px 0 20px 0;
     letter-spacing: 1px;
   }
   p {
-    font-size: 20px;
-    line-height: 1.8;
-    margin-bottom: 16px;
+    font-size: 26px;
+    line-height: 1.9;
+    margin-bottom: 18px;
     color: #111;
   }
   a {
@@ -307,7 +307,7 @@ function buildDigestHtml(text) {
   /* Footer line */
   p:last-child {
     color: #555;
-    font-size: 16px;
+    font-size: 20px;
     border-top: 1px solid #ccc;
     padding-top: 20px;
     margin-top: 32px;

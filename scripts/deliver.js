@@ -284,16 +284,19 @@ async function main() {
       case 'feishu': {
         const appId = process.env.FEISHU_APP_ID;
         const appSecret = process.env.FEISHU_APP_SECRET;
-        const feishuChatId = delivery.chatId;
         if (!appId) throw new Error('FEISHU_APP_ID not found in .env');
         if (!appSecret) throw new Error('FEISHU_APP_SECRET not found in .env');
-        if (!feishuChatId) throw new Error('delivery.chatId not found in config.json');
+        if (!delivery.chatId) throw new Error('delivery.chatId not found in config.json');
+        // chatId can be a single string or an array of strings
+        const chatIds = Array.isArray(delivery.chatId) ? delivery.chatId : [delivery.chatId];
         const feishuToken = await getFeishuToken(appId, appSecret);
-        await sendFeishu(digestText, feishuToken, feishuChatId);
+        for (const id of chatIds) {
+          await sendFeishu(digestText, feishuToken, id);
+        }
         console.log(JSON.stringify({
           status: 'ok',
           method: 'feishu',
-          message: `Digest sent to Feishu chat ${feishuChatId}`
+          message: `Digest sent to ${chatIds.length} Feishu chat(s)`
         }));
         break;
       }

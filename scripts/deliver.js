@@ -269,48 +269,48 @@ function buildDigestHtml(text) {
     font-family: "Noto Sans CJK SC", "WenQuanYi Micro Hei", "Microsoft YaHei",
                  "PingFang SC", "Hiragino Sans GB", sans-serif;
     background: #fff;
-    padding: 40px 48px;
+    padding: 48px 56px;
     width: 800px;
-    color: #1a1a1a;
+    color: #000;
     -webkit-font-smoothing: antialiased;
   }
   h1 {
-    font-size: 22px;
-    font-weight: 700;
-    color: #1677ff;
-    border-bottom: 2px solid #1677ff;
-    padding-bottom: 12px;
-    margin-bottom: 28px;
+    font-size: 32px;
+    font-weight: 800;
+    color: #0050b3;
+    border-bottom: 3px solid #0050b3;
+    padding-bottom: 16px;
+    margin-bottom: 32px;
   }
   h2 {
-    font-size: 15px;
+    font-size: 22px;
     font-weight: 700;
     color: #fff;
-    background: #1677ff;
+    background: #0050b3;
     display: inline-block;
-    padding: 4px 14px;
-    border-radius: 3px;
-    margin: 28px 0 14px 0;
+    padding: 8px 20px;
+    border-radius: 4px;
+    margin: 36px 0 18px 0;
     letter-spacing: 1px;
   }
   p {
-    font-size: 14px;
-    line-height: 1.7;
-    margin-bottom: 12px;
-    color: #333;
+    font-size: 20px;
+    line-height: 1.8;
+    margin-bottom: 16px;
+    color: #111;
   }
   a {
-    color: #1677ff;
-    text-decoration: none;
+    color: #0050b3;
+    text-decoration: underline;
     word-break: break-all;
   }
   /* Footer line */
   p:last-child {
-    color: #999;
-    font-size: 12px;
-    border-top: 1px solid #eee;
-    padding-top: 16px;
-    margin-top: 24px;
+    color: #555;
+    font-size: 16px;
+    border-top: 1px solid #ccc;
+    padding-top: 20px;
+    margin-top: 32px;
   }
 </style>
 </head>

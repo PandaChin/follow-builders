@@ -176,184 +176,259 @@ async function getFeishuToken(appId, appSecret) {
   return data.tenant_access_token;
 }
 
-// Helper: send a single Feishu interactive card message.
-// If rootId is provided, sends as a reply to that message (thread).
-async function feishuSendCard(token, chatId, cardObj, rootId = null) {
-  const url = rootId
-    ? `https://open.feishu.cn/open-apis/im/v1/messages/${rootId}/reply`
-    : 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id';
+// Renders the digest text as a styled PNG image using puppeteer-core.
+// Requires Chromium installed on the system (yum install chromium).
+async function generateDigestImage(text) {
+  const puppeteer = await import('puppeteer-core');
+  const { existsSync } = await import('fs');
 
-  const body = rootId
-    ? { msg_type: 'interactive', content: JSON.stringify(cardObj) }
-    : { receive_id: chatId, msg_type: 'interactive', content: JSON.stringify(cardObj) };
+  // Find Chromium binary
+  const chromiumPaths = [
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/snap/bin/chromium'
+  ];
+  const execPath = chromiumPaths.find(p => existsSync(p));
+  if (!execPath) {
+    throw new Error('Chromium not found. Install with: yum install -y chromium');
+  }
 
-  const res = await fetch(url, {
+  const html = buildDigestHtml(text);
+
+  const browser = await puppeteer.default.launch({
+    executablePath: execPath,
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none']
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 800, height: 600, deviceScaleFactor: 2 });
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+
+    const bodyHandle = await page.$('body');
+    const { width, height } = await bodyHandle.boundingBox();
+    await page.setViewport({
+      width: Math.ceil(width),
+      height: Math.ceil(height),
+      deviceScaleFactor: 2
+    });
+
+    const buffer = await page.screenshot({
+      type: 'png',
+      clip: { x: 0, y: 0, width: Math.ceil(width), height: Math.ceil(height) }
+    });
+
+    return buffer;
+  } finally {
+    await browser.close();
+  }
+}
+
+// Converts digest plain text to a styled HTML page for screenshot.
+function buildDigestHtml(text) {
+  // Escape HTML entities then apply lightweight formatting
+  const escaped = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // Section headers (all-caps lines) → styled headings
+  const formatted = escaped.replace(
+    /^(PODCASTS|X\s*\/\s*TWITTER|OFFICIAL\s*BLOGS|BLOGS)$/gm,
+    '<h2>$1</h2>'
+  );
+
+  // Title line → styled header
+  const withTitle = formatted.replace(
+    /^(AI Builders Digest\s*—.+)$/m,
+    '<h1>$1</h1>'
+  );
+
+  // URLs → clickable links
+  const withLinks = withTitle.replace(
+    /(https:\/\/[^\s<]+)/g,
+    '<a href="$1">$1</a>'
+  );
+
+  // Convert double newlines to paragraph breaks, single to <br>
+  const paragraphs = withLinks
+    .split(/\n\n+/)
+    .map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`)
+    .join('\n');
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Noto Sans CJK SC", "WenQuanYi Micro Hei", "Microsoft YaHei",
+                 "PingFang SC", "Hiragino Sans GB", sans-serif;
+    background: #fff;
+    padding: 40px 48px;
+    width: 800px;
+    color: #1a1a1a;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 700;
+    color: #1677ff;
+    border-bottom: 2px solid #1677ff;
+    padding-bottom: 12px;
+    margin-bottom: 28px;
+  }
+  h2 {
+    font-size: 15px;
+    font-weight: 700;
+    color: #fff;
+    background: #1677ff;
+    display: inline-block;
+    padding: 4px 14px;
+    border-radius: 3px;
+    margin: 28px 0 14px 0;
+    letter-spacing: 1px;
+  }
+  p {
+    font-size: 14px;
+    line-height: 1.7;
+    margin-bottom: 12px;
+    color: #333;
+  }
+  a {
+    color: #1677ff;
+    text-decoration: none;
+    word-break: break-all;
+  }
+  /* Footer line */
+  p:last-child {
+    color: #999;
+    font-size: 12px;
+    border-top: 1px solid #eee;
+    padding-top: 16px;
+    margin-top: 24px;
+  }
+</style>
+</head>
+<body>
+${paragraphs}
+</body>
+</html>`;
+}
+
+// Uploads an image to Feishu and returns the image_key.
+// Requires the im:resource permission on the Feishu app.
+async function feishuUploadImage(token, imageBuffer) {
+  const boundary = '----FeishuBoundary' + Date.now();
+  const headerStr = [
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="image_type"',
+    '',
+    'message',
+    `--${boundary}`,
+    'Content-Disposition: form-data; name="image"; filename="digest.png"',
+    'Content-Type: image/png',
+    '',
+    ''
+  ].join('\r\n');
+  const footerStr = `\r\n--${boundary}--`;
+
+  const headerBytes = new TextEncoder().encode(headerStr);
+  const footerBytes = new TextEncoder().encode(footerStr);
+  const body = new Uint8Array(headerBytes.length + imageBuffer.length + footerBytes.length);
+  body.set(headerBytes, 0);
+  body.set(imageBuffer, headerBytes.length);
+  body.set(footerBytes, headerBytes.length + imageBuffer.length);
+
+  const res = await fetch('https://open.feishu.cn/open-apis/im/v1/images', {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': `multipart/form-data; boundary=${boundary}`
     },
-    body: JSON.stringify(body)
+    body
   });
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(`Feishu API error: ${err.msg || JSON.stringify(err)}`);
+    throw new Error(`Feishu image upload failed: ${err.msg || JSON.stringify(err)}`);
   }
 
   const data = await res.json();
   if (data.code !== 0) {
-    throw new Error(`Feishu send error: ${data.msg || JSON.stringify(data)}`);
+    throw new Error(`Feishu image upload error: ${data.msg || JSON.stringify(data)}`);
   }
 
-  return data.data?.message_id || null;
+  return data.data.image_key;
 }
 
-// Builds a compact summary card from the full digest text.
-function buildFeishuSummaryCard(text) {
-  const lines = text.split('\n');
-  const titleLine = lines.find(l => l.trim().length > 0) || 'AI Builders Digest';
-  const dateMatch = titleLine.match(/—\s*(.+)$/);
-  const date = dateMatch ? dateMatch[1].trim() : '';
-
-  // Collect first few meaningful lines as preview
-  const previewLines = [];
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (trimmed === titleLine.trim()) continue;
-    if (trimmed.startsWith('http')) continue;
-    if (trimmed.startsWith('Generated through')) break;
-    previewLines.push(trimmed);
-    if (previewLines.join('\n').length > 300) break;
-  }
-
-  // Stats
-  const podcastCount = (text.match(/PODCASTS|PODCAST/gi) || []).length > 0;
-  const tweetSection = !!text.match(/X\s*\/\s*TWITTER/i);
-  const blogSection = !!text.match(/OFFICIAL\s*BLOGS|BLOGS/i);
-  const urlCount = (text.match(/https:\/\/(x\.com|youtube\.com|anthropic\.com|claude\.com)/g) || []).length;
-
-  const stats = [];
-  if (urlCount > 0) stats.push(`**${urlCount}** 条内容来源`);
-  if (podcastCount) stats.push('🎙 播客更新');
-  if (tweetSection) stats.push('🐦 X/Twitter 动态');
-  if (blogSection) stats.push('📝 官方博客');
-
-  const preview = previewLines.slice(0, 5).map(l =>
-    l.length > 60 ? l.slice(0, 57) + '...' : l
-  ).join('\n');
-
-  const summaryMd = [
-    stats.length > 0 ? stats.join(' · ') : '',
-    '',
-    preview ? '**本期亮点：**' : '',
-    preview,
-    '',
-    '💬 *完整内容见下方回复*'
-  ].filter(l => l !== null).join('\n');
-
-  return {
-    config: { wide_screen_mode: true },
-    header: {
-      title: { tag: 'plain_text', content: `📰 AI Builders Digest — ${date}` },
-      template: 'blue'
-    },
-    elements: [{ tag: 'markdown', content: summaryMd }]
-  };
-}
-
-// Splits the digest text into sections by detecting section headers
-// (all-caps lines like "PODCASTS", "X / TWITTER", "OFFICIAL BLOGS").
-// Returns an array of { title, content } objects.
-function splitDigestIntoSections(text) {
-  const lines = text.split('\n');
-  const sections = [];
-  let currentTitle = null;
-  let currentLines = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    // Skip the main title line
-    if (trimmed.match(/^AI Builders Digest\s*—/i)) continue;
-
-    // Skip the generated-through footer
-    if (trimmed.startsWith('Generated through')) continue;
-
-    // Detect section headers: short, all-caps (or mostly caps), no URLs
-    const isSectionHeader = trimmed.length > 0
-      && trimmed.length < 40
-      && !trimmed.startsWith('http')
-      && !trimmed.startsWith('https://')
-      && (trimmed === trimmed.toUpperCase() || trimmed.match(/^[A-Z\s\/]+$/));
-
-    if (isSectionHeader) {
-      // Save previous section
-      if (currentTitle !== null && currentLines.length > 0) {
-        sections.push({ title: currentTitle, content: currentLines.join('\n').trim() });
-      }
-      currentTitle = trimmed;
-      currentLines = [];
-    } else {
-      currentLines.push(line);
+// Sends an image message to a Feishu group.
+async function feishuSendImage(token, chatId, imageKey) {
+  const res = await fetch(
+    'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        receive_id: chatId,
+        msg_type: 'image',
+        content: JSON.stringify({ image_key: imageKey })
+      })
     }
+  );
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`Feishu send image failed: ${err.msg || JSON.stringify(err)}`);
   }
 
-  // Save last section
-  if (currentTitle !== null && currentLines.length > 0) {
-    sections.push({ title: currentTitle, content: currentLines.join('\n').trim() });
+  const data = await res.json();
+  if (data.code !== 0) {
+    throw new Error(`Feishu send image error: ${data.msg || JSON.stringify(data)}`);
   }
-
-  // If no sections detected, return the whole text as one chunk
-  if (sections.length === 0) {
-    sections.push({ title: '完整内容', content: text.trim() });
-  }
-
-  return sections;
 }
 
-// Sends the digest to Feishu using the thread pattern:
-// 1. Compact summary card → main group (small footprint)
-// 2. Each section as a separate reply card → thread (scannable, not one giant wall)
+// Sends the digest to Feishu as a rendered long-image.
+// Falls back to a compact text card if image generation fails (e.g. no Chromium).
 async function sendFeishu(text, token, chatId) {
-  // Step 1: summary card in main group
-  const summaryCard = buildFeishuSummaryCard(text);
-  const rootMessageId = await feishuSendCard(token, chatId, summaryCard);
-
-  if (!rootMessageId) {
-    // Fallback: send full content as a single card
-    const fallbackCard = {
-      config: { wide_screen_mode: true },
-      elements: [{ tag: 'markdown', content: text.slice(0, 25000) }]
-    };
-    await feishuSendCard(token, chatId, fallbackCard);
-    return;
-  }
-
-  // Step 2: each section as a reply card
-  const sections = splitDigestIntoSections(text);
-
-  for (let i = 0; i < sections.length; i++) {
-    const section = sections[i];
-    // Truncate individual section if extremely long
-    const content = section.content.length > 25000
-      ? section.content.slice(0, 25000) + '\n\n...(内容过长已截断)'
-      : section.content;
-
+  try {
+    const imageBuffer = await generateDigestImage(text);
+    const imageKey = await feishuUploadImage(token, imageBuffer);
+    await feishuSendImage(token, chatId, imageKey);
+  } catch (imgErr) {
+    console.error(`[feishu] Image delivery failed, falling back to text card: ${imgErr.message}`);
+    // Fallback: compact card with the first portion of the digest
     const card = {
       config: { wide_screen_mode: true },
       header: {
-        title: { tag: 'plain_text', content: section.title },
-        template: 'grey'
+        title: { tag: 'plain_text', content: '📰 AI Builders Digest' },
+        template: 'blue'
       },
-      elements: [{ tag: 'markdown', content }]
+      elements: [{ tag: 'markdown', content: text.slice(0, 25000) }]
     };
-
-    await feishuSendCard(token, chatId, card, rootMessageId);
-
-    // Small delay between replies to avoid rate limiting
-    if (i < sections.length - 1) await new Promise(r => setTimeout(r, 500));
+    const res = await fetch(
+      'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          receive_id: chatId,
+          msg_type: 'interactive',
+          content: JSON.stringify(card)
+        })
+      }
+    );
+    if (!res.ok) throw new Error('Feishu fallback send failed');
   }
 }
 

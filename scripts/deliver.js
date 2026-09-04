@@ -205,7 +205,7 @@ async function generateDigestImage(text) {
 
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 900, height: 600, deviceScaleFactor: 2 });
+    await page.setViewport({ width: 1100, height: 600, deviceScaleFactor: 2 });
     await page.setContent(html, { waitUntil: 'networkidle0' });
 
     const bodyHandle = await page.$('body');
@@ -269,34 +269,34 @@ function buildDigestHtml(text) {
     font-family: "Noto Sans CJK SC", "WenQuanYi Micro Hei", "Microsoft YaHei",
                  "PingFang SC", "Hiragino Sans GB", sans-serif;
     background: #fff;
-    padding: 56px 64px;
-    width: 900px;
+    padding: 64px 72px;
+    width: 1100px;
     color: #000;
     -webkit-font-smoothing: antialiased;
   }
   h1 {
-    font-size: 42px;
+    font-size: 63px;
     font-weight: 800;
     color: #0050b3;
-    border-bottom: 3px solid #0050b3;
-    padding-bottom: 16px;
-    margin-bottom: 36px;
+    border-bottom: 4px solid #0050b3;
+    padding-bottom: 20px;
+    margin-bottom: 44px;
   }
   h2 {
-    font-size: 30px;
+    font-size: 45px;
     font-weight: 700;
     color: #fff;
     background: #0050b3;
     display: inline-block;
-    padding: 10px 24px;
+    padding: 12px 28px;
     border-radius: 4px;
-    margin: 40px 0 20px 0;
+    margin: 48px 0 24px 0;
     letter-spacing: 1px;
   }
   p {
-    font-size: 26px;
+    font-size: 39px;
     line-height: 1.9;
-    margin-bottom: 18px;
+    margin-bottom: 22px;
     color: #111;
   }
   a {
@@ -307,7 +307,7 @@ function buildDigestHtml(text) {
   /* Footer line */
   p:last-child {
     color: #555;
-    font-size: 20px;
+    font-size: 30px;
     border-top: 1px solid #ccc;
     padding-top: 20px;
     margin-top: 32px;

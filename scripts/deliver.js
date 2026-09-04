@@ -176,26 +176,23 @@ async function getFeishuToken(appId, appSecret) {
   return data.tenant_access_token;
 }
 
-// Helper: send a single Feishu card message. Returns the message_id from
-// the response so we can use it as a thread root for follow-up replies.
-async function feishuSendCard(token, chatId, cardObj, rootId = null) {
-  // Replies use a different endpoint and don't need receive_id in the body
-  const url = rootId
-    ? `https://open.feishu.cn/open-apis/im/v1/messages/${rootId}/reply`
-    : 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id';
-
-  const body = rootId
-    ? { msg_type: 'interactive', content: JSON.stringify(cardObj) }
-    : { receive_id: chatId, msg_type: 'interactive', content: JSON.stringify(cardObj) };
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
-    body: JSON.stringify(body)
-  });
+// Helper: send a single Feishu interactive card message to a group.
+async function feishuSendCard(token, chatId, cardObj) {
+  const res = await fetch(
+    'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        receive_id: chatId,
+        msg_type: 'interactive',
+        content: JSON.stringify(cardObj)
+      })
+    }
+  );
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -206,20 +203,18 @@ async function feishuSendCard(token, chatId, cardObj, rootId = null) {
   if (data.code !== 0) {
     throw new Error(`Feishu send error: ${data.msg || JSON.stringify(data)}`);
   }
-
-  return data.data?.message_id || null;
 }
 
-// Builds a compact summary card from the full digest text.
-// Extracts the title line and a brief preview of the first few items.
-function buildFeishuSummaryCard(text) {
+// Builds a card with a compact summary on top and the full digest inside
+// a collapsible (collapsed) block. Users see the summary and can click to
+// expand the full content — all within a single card message.
+function buildFeishuDigestCard(text) {
   const lines = text.split('\n');
-  // Extract title (first non-empty line, usually "AI Builders Digest — Date")
   const titleLine = lines.find(l => l.trim().length > 0) || 'AI Builders Digest';
   const dateMatch = titleLine.match(/—\s*(.+)$/);
   const date = dateMatch ? dateMatch[1].trim() : '';
 
-  // Collect first few meaningful lines as preview (skip title, blank lines, URLs)
+  // Collect first few meaningful lines as preview
   const previewLines = [];
   for (const line of lines) {
     const trimmed = line.trim();
@@ -251,10 +246,12 @@ function buildFeishuSummaryCard(text) {
     stats.length > 0 ? stats.join(' · ') : '',
     '',
     preview ? '**本期亮点：**' : '',
-    preview,
-    '',
-    '💬 *完整内容见下方回复*'
+    preview
   ].filter(l => l !== null).join('\n');
+
+  // Full digest goes inside the collapsible block.
+  // Feishu collapsed body limit is ~50KB; truncate if needed.
+  const fullContent = text.length > 48000 ? text.slice(0, 48000) + '\n\n...(内容过长已截断)' : text;
 
   return {
     config: { wide_screen_mode: true },
@@ -262,55 +259,30 @@ function buildFeishuSummaryCard(text) {
       title: { tag: 'plain_text', content: `📰 AI Builders Digest — ${date}` },
       template: 'blue'
     },
-    elements: [{ tag: 'markdown', content: summaryMd }]
+    elements: [
+      { tag: 'markdown', content: summaryMd },
+      {
+        tag: 'collapsed',
+        header: {
+          title: { tag: 'plain_text', content: '📖 展开查看完整内容' },
+          template: 'grey'
+        },
+        border: { color: 'grey' },
+        body: {
+          elements: [
+            { tag: 'markdown', content: fullContent }
+          ]
+        }
+      }
+    ]
   };
 }
 
-// Sends the digest to Feishu using the thread pattern:
-// 1. Compact summary card → main group
-// 2. Full digest as a reply thread (click "查看回复" to expand)
-// If the full digest exceeds 25KB, it's split across multiple replies.
+// Sends the digest to Feishu as a single card with collapsible full content.
+// The card shows a compact summary; users click to expand the full digest.
 async function sendFeishu(text, token, chatId) {
-  // Step 1: send summary card to main group
-  const summaryCard = buildFeishuSummaryCard(text);
-  const rootMessageId = await feishuSendCard(token, chatId, summaryCard);
-
-  if (!rootMessageId) {
-    // Fallback: send full content as a regular card if we can't get message_id
-    const fallbackCard = {
-      config: { wide_screen_mode: true },
-      elements: [{ tag: 'markdown', content: text.slice(0, 25000) }]
-    };
-    await feishuSendCard(token, chatId, fallbackCard);
-    return;
-  }
-
-  // Step 2: send full digest in the reply thread
-  const MAX_LEN = 25000;
-  const chunks = [];
-  let remaining = text;
-  while (remaining.length > 0) {
-    if (remaining.length <= MAX_LEN) {
-      chunks.push(remaining);
-      break;
-    }
-    let splitAt = remaining.lastIndexOf('\n', MAX_LEN);
-    if (splitAt < MAX_LEN * 0.5) splitAt = MAX_LEN;
-    chunks.push(remaining.slice(0, splitAt));
-    remaining = remaining.slice(splitAt);
-  }
-
-  for (let i = 0; i < chunks.length; i++) {
-    const cardContent = {
-      config: { wide_screen_mode: true },
-      elements: [{ tag: 'markdown', content: chunks[i] }]
-    };
-
-    await feishuSendCard(token, chatId, cardContent, rootMessageId);
-
-    // Small delay between chunks to avoid rate limiting
-    if (i < chunks.length - 1) await new Promise(r => setTimeout(r, 500));
-  }
+  const card = buildFeishuDigestCard(text);
+  await feishuSendCard(token, chatId, card);
 }
 
 // -- Main --------------------------------------------------------------------

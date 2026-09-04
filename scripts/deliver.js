@@ -176,23 +176,25 @@ async function getFeishuToken(appId, appSecret) {
   return data.tenant_access_token;
 }
 
-// Helper: send a single Feishu interactive card message to a group.
-async function feishuSendCard(token, chatId, cardObj) {
-  const res = await fetch(
-    'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({
-        receive_id: chatId,
-        msg_type: 'interactive',
-        content: JSON.stringify(cardObj)
-      })
-    }
-  );
+// Helper: send a single Feishu interactive card message.
+// If rootId is provided, sends as a reply to that message (thread).
+async function feishuSendCard(token, chatId, cardObj, rootId = null) {
+  const url = rootId
+    ? `https://open.feishu.cn/open-apis/im/v1/messages/${rootId}/reply`
+    : 'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id';
+
+  const body = rootId
+    ? { msg_type: 'interactive', content: JSON.stringify(cardObj) }
+    : { receive_id: chatId, msg_type: 'interactive', content: JSON.stringify(cardObj) };
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify(body)
+  });
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -203,12 +205,12 @@ async function feishuSendCard(token, chatId, cardObj) {
   if (data.code !== 0) {
     throw new Error(`Feishu send error: ${data.msg || JSON.stringify(data)}`);
   }
+
+  return data.data?.message_id || null;
 }
 
-// Builds a card with a compact summary on top and the full digest inside
-// a collapsible (collapsed) block. Users see the summary and can click to
-// expand the full content — all within a single card message.
-function buildFeishuDigestCard(text) {
+// Builds a compact summary card from the full digest text.
+function buildFeishuSummaryCard(text) {
   const lines = text.split('\n');
   const titleLine = lines.find(l => l.trim().length > 0) || 'AI Builders Digest';
   const dateMatch = titleLine.match(/—\s*(.+)$/);
@@ -227,16 +229,16 @@ function buildFeishuDigestCard(text) {
   }
 
   // Stats
-  const podcastCount = (text.match(/PODCASTS|PODCAST/gi) || []).length > 0 ? 1 : 0;
-  const tweetSection = text.match(/X\s*\/\s*TWITTER/i) ? 1 : 0;
-  const blogSection = text.match(/OFFICIAL\s*BLOGS|BLOGS/i) ? 1 : 0;
+  const podcastCount = (text.match(/PODCASTS|PODCAST/gi) || []).length > 0;
+  const tweetSection = !!text.match(/X\s*\/\s*TWITTER/i);
+  const blogSection = !!text.match(/OFFICIAL\s*BLOGS|BLOGS/i);
   const urlCount = (text.match(/https:\/\/(x\.com|youtube\.com|anthropic\.com|claude\.com)/g) || []).length;
 
   const stats = [];
   if (urlCount > 0) stats.push(`**${urlCount}** 条内容来源`);
-  if (podcastCount) stats.push('播客更新');
-  if (tweetSection) stats.push('X/Twitter 动态');
-  if (blogSection) stats.push('官方博客');
+  if (podcastCount) stats.push('🎙 播客更新');
+  if (tweetSection) stats.push('🐦 X/Twitter 动态');
+  if (blogSection) stats.push('📝 官方博客');
 
   const preview = previewLines.slice(0, 5).map(l =>
     l.length > 60 ? l.slice(0, 57) + '...' : l
@@ -246,12 +248,10 @@ function buildFeishuDigestCard(text) {
     stats.length > 0 ? stats.join(' · ') : '',
     '',
     preview ? '**本期亮点：**' : '',
-    preview
+    preview,
+    '',
+    '💬 *完整内容见下方回复*'
   ].filter(l => l !== null).join('\n');
-
-  // Full digest goes inside the collapsible block.
-  // Feishu collapsed body limit is ~50KB; truncate if needed.
-  const fullContent = text.length > 48000 ? text.slice(0, 48000) + '\n\n...(内容过长已截断)' : text;
 
   return {
     config: { wide_screen_mode: true },
@@ -259,30 +259,102 @@ function buildFeishuDigestCard(text) {
       title: { tag: 'plain_text', content: `📰 AI Builders Digest — ${date}` },
       template: 'blue'
     },
-    elements: [
-      { tag: 'markdown', content: summaryMd },
-      {
-        tag: 'collapsed',
-        header: {
-          title: { tag: 'plain_text', content: '📖 展开查看完整内容' },
-          template: 'grey'
-        },
-        border: { color: 'grey' },
-        body: {
-          elements: [
-            { tag: 'markdown', content: fullContent }
-          ]
-        }
-      }
-    ]
+    elements: [{ tag: 'markdown', content: summaryMd }]
   };
 }
 
-// Sends the digest to Feishu as a single card with collapsible full content.
-// The card shows a compact summary; users click to expand the full digest.
+// Splits the digest text into sections by detecting section headers
+// (all-caps lines like "PODCASTS", "X / TWITTER", "OFFICIAL BLOGS").
+// Returns an array of { title, content } objects.
+function splitDigestIntoSections(text) {
+  const lines = text.split('\n');
+  const sections = [];
+  let currentTitle = null;
+  let currentLines = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Skip the main title line
+    if (trimmed.match(/^AI Builders Digest\s*—/i)) continue;
+
+    // Skip the generated-through footer
+    if (trimmed.startsWith('Generated through')) continue;
+
+    // Detect section headers: short, all-caps (or mostly caps), no URLs
+    const isSectionHeader = trimmed.length > 0
+      && trimmed.length < 40
+      && !trimmed.startsWith('http')
+      && !trimmed.startsWith('https://')
+      && (trimmed === trimmed.toUpperCase() || trimmed.match(/^[A-Z\s\/]+$/));
+
+    if (isSectionHeader) {
+      // Save previous section
+      if (currentTitle !== null && currentLines.length > 0) {
+        sections.push({ title: currentTitle, content: currentLines.join('\n').trim() });
+      }
+      currentTitle = trimmed;
+      currentLines = [];
+    } else {
+      currentLines.push(line);
+    }
+  }
+
+  // Save last section
+  if (currentTitle !== null && currentLines.length > 0) {
+    sections.push({ title: currentTitle, content: currentLines.join('\n').trim() });
+  }
+
+  // If no sections detected, return the whole text as one chunk
+  if (sections.length === 0) {
+    sections.push({ title: '完整内容', content: text.trim() });
+  }
+
+  return sections;
+}
+
+// Sends the digest to Feishu using the thread pattern:
+// 1. Compact summary card → main group (small footprint)
+// 2. Each section as a separate reply card → thread (scannable, not one giant wall)
 async function sendFeishu(text, token, chatId) {
-  const card = buildFeishuDigestCard(text);
-  await feishuSendCard(token, chatId, card);
+  // Step 1: summary card in main group
+  const summaryCard = buildFeishuSummaryCard(text);
+  const rootMessageId = await feishuSendCard(token, chatId, summaryCard);
+
+  if (!rootMessageId) {
+    // Fallback: send full content as a single card
+    const fallbackCard = {
+      config: { wide_screen_mode: true },
+      elements: [{ tag: 'markdown', content: text.slice(0, 25000) }]
+    };
+    await feishuSendCard(token, chatId, fallbackCard);
+    return;
+  }
+
+  // Step 2: each section as a reply card
+  const sections = splitDigestIntoSections(text);
+
+  for (let i = 0; i < sections.length; i++) {
+    const section = sections[i];
+    // Truncate individual section if extremely long
+    const content = section.content.length > 25000
+      ? section.content.slice(0, 25000) + '\n\n...(内容过长已截断)'
+      : section.content;
+
+    const card = {
+      config: { wide_screen_mode: true },
+      header: {
+        title: { tag: 'plain_text', content: section.title },
+        template: 'grey'
+      },
+      elements: [{ tag: 'markdown', content }]
+    };
+
+    await feishuSendCard(token, chatId, card, rootMessageId);
+
+    // Small delay between replies to avoid rate limiting
+    if (i < sections.length - 1) await new Promise(r => setTimeout(r, 500));
+  }
 }
 
 // -- Main --------------------------------------------------------------------

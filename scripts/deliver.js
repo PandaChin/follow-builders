@@ -176,8 +176,43 @@ async function getFeishuToken(appId, appSecret) {
   return data.tenant_access_token;
 }
 
+// Forcefully kills all Chromium processes and cleans up temp directories.
+// Called after every screenshot attempt to prevent zombie process buildup
+// on low-memory servers (e.g. 1.8GB ECS running daily for 365 days).
+async function killAllChromium(browserInstance) {
+  // 1. Kill browser process tree via PID
+  if (browserInstance) {
+    try {
+      const pid = browserInstance.process()?.pid;
+      if (pid) process.kill(-pid, 'SIGKILL');  // negative PID = kill process group
+    } catch {}
+    try {
+      await browserInstance.close();
+    } catch {}
+    // Remove puppeteer's temp user-data directory
+    try {
+      const dir = browserInstance.userDataDir;
+      if (dir) {
+        const { rm } = await import('fs/promises');
+        await rm(dir, { recursive: true, force: true });
+      }
+    } catch {}
+  }
+
+  // 2. Kill any orphaned chromium processes system-wide (safety net)
+  try {
+    const { execSync } = await import('child_process');
+    execSync('pkill -9 -f chromium 2>/dev/null || true', { timeout: 5000 });
+    execSync('pkill -9 -f chrome 2>/dev/null || true', { timeout: 5000 });
+    // Wait briefly for kernel to reclaim memory
+    await new Promise(r => setTimeout(r, 1000));
+  } catch {}
+}
+
 // Renders the digest text as a styled PNG image using puppeteer-core.
 // Requires Chromium installed on the system (yum install chromium).
+// Guarantees all Chromium processes are killed after each run to prevent
+// memory leaks on long-running servers.
 async function generateDigestImage(text) {
   const puppeteer = await import('puppeteer-core');
   const { existsSync } = await import('fs');
@@ -195,12 +230,22 @@ async function generateDigestImage(text) {
     throw new Error('Chromium not found. Install with: yum install -y chromium');
   }
 
+  // Clean up any stale chromium processes from previous runs
+  await killAllChromium(null);
+
   const html = buildDigestHtml(text);
 
   const browser = await puppeteer.default.launch({
     executablePath: execPath,
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none']
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',   // use /tmp instead of /dev/shm (prevents OOM on small servers)
+      '--disable-gpu',
+      '--single-process',          // fewer child processes
+      '--font-render-hinting=none'
+    ]
   });
 
   try {
@@ -223,7 +268,8 @@ async function generateDigestImage(text) {
 
     return buffer;
   } finally {
-    await browser.close();
+    // Always kill everything, even on error
+    await killAllChromium(browser);
   }
 }
 

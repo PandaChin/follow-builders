@@ -251,15 +251,20 @@ async function generateDigestImage(text) {
 
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1100, height: 600, deviceScaleFactor: 2 });
+    await page.setViewport({ width: 1100, height: 600, deviceScaleFactor: 3 });
     await page.setContent(html, { waitUntil: 'networkidle0' });
 
     const bodyHandle = await page.$('body');
     const { width, height } = await bodyHandle.boundingBox();
+    // Chromium max texture is ~16384px; clamp the scale factor so the final
+    // bitmap fits, otherwise the top of the screenshot renders garbled.
+    const safeDsf = Math.max(1, Math.min(3,
+      Math.floor(16384 / Math.ceil(height)),
+      Math.floor(16384 / Math.ceil(width))));
     await page.setViewport({
       width: Math.ceil(width),
       height: Math.ceil(height),
-      deviceScaleFactor: 2
+      deviceScaleFactor: safeDsf
     });
 
     const buffer = await page.screenshot({
@@ -276,6 +281,9 @@ async function generateDigestImage(text) {
 
 // Converts digest plain text to a styled HTML page for screenshot.
 function buildDigestHtml(text) {
+  // Strip emoji (server has no emoji font; would render as tofu boxes)
+  text = text.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu, '');
+  text = text.replace(/^[ \t]+/gm, '');  // trim leading spaces left by stripped emoji
   // Escape HTML entities then apply lightweight formatting
   const escaped = text
     .replace(/&/g, '&amp;')
@@ -300,11 +308,26 @@ function buildDigestHtml(text) {
     '<a href="$1">$1</a>'
   );
 
-  // Convert double newlines to paragraph breaks, single to <br>
-  const paragraphs = withLinks
-    .split(/\n\n+/)
-    .map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`)
-    .join('\n');
+  // Convert double newlines to paragraph breaks, single to <br>.
+  // Each item becomes a card; the intro line right after the title becomes
+  // a summary box; "> " lines become blockquotes.
+  const blocks = withLinks.split(/\n\n+/);
+  const TITLE_KW = /(CEO|CTO|合伙人|总监|创始人|主理人|作者|builder|Builder|VC|教程|研究员|VP|总裁)/;
+  const paragraphs = blocks.map((p, i) => {
+    const lines = p.split(/\n/).map(l => {
+      const t = l.trim();
+      if (/^<a href=/.test(t)) return `<span class="url">${t}</span>`;
+      if (/^&gt;\s?/.test(t)) return `<blockquote>${t.replace(/^&gt;\s?/, '')}</blockquote>`;
+      return t;
+    }).join('');
+    // Bold leading "Name（Role）" — the digest's builder intro pattern
+    const body = lines.replace(/^([^<（]{2,36})（([^）]{2,30})）/, '<strong>$1（$2）</strong>');
+    if (/^<h[12][> ]/.test(lines)) return lines;  // headings render standalone
+    if (i === 1) return `<div class="summary">${body}</div>`;  // intro/summary box
+    return `<p>${body}</p>`;
+  }).join('\n');
+
+  const minutes = Math.max(1, Math.round(text.replace(/\s+/g, '').length / 400));
 
   return `<!DOCTYPE html>
 <html>
@@ -313,38 +336,76 @@ function buildDigestHtml(text) {
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    font-family: "Noto Sans CJK SC", "WenQuanYi Micro Hei", "Microsoft YaHei",
-                 "PingFang SC", "Hiragino Sans GB", sans-serif;
+    font-family: "PingFang SC", "Noto Sans CJK SC", "Hiragino Sans GB",
+                 "Microsoft YaHei", "WenQuanYi Micro Hei", "Helvetica Neue", Arial, sans-serif;
     background: #fff;
     padding: 64px 72px;
     width: 1100px;
-    color: #000;
-    -webkit-font-smoothing: antialiased;
+    color: #1a1a1a;
+    -webkit-font-smoothing: none;
+    text-rendering: optimizeLegibility;
+    letter-spacing: 0.5px;
   }
   h1 {
-    font-size: 63px;
+    font-size: 58px;
     font-weight: 800;
     color: #0050b3;
     border-bottom: 4px solid #0050b3;
     padding-bottom: 20px;
-    margin-bottom: 44px;
+    margin-bottom: 12px;
+    white-space: nowrap;
+  }
+  .reading-time {
+    font-size: 28px;
+    color: #8a8f99;
+    margin-bottom: 40px;
+  }
+  .summary {
+    font-size: 50px;
+    line-height: 1.75;
+    color: #333;
+    background: #f2f4f7;
+    border-left: 10px solid #0050b3;
+    border-radius: 0 12px 12px 0;
+    padding: 30px 36px;
+    margin-bottom: 48px;
   }
   h2 {
-    font-size: 45px;
-    font-weight: 700;
-    color: #fff;
-    background: #0050b3;
-    display: inline-block;
-    padding: 12px 28px;
-    border-radius: 4px;
-    margin: 48px 0 24px 0;
+    font-size: 52px;
+    font-weight: 800;
+    color: #333;
+    display: block;
+    padding: 0 0 14px 0;
+    margin: 64px 0 28px 0;
+    border-bottom: 3px solid #d9dde3;
     letter-spacing: 1px;
   }
   p {
-    font-size: 39px;
-    line-height: 1.9;
-    margin-bottom: 22px;
-    color: #111;
+    font-size: 50px;
+    line-height: 1.75;
+    margin: 0 0 36px 0;
+    color: #222;
+    background: #f7f8fa;
+    border-radius: 14px;
+    padding: 32px 36px;
+  }
+  strong {
+    font-weight: 700;
+    color: #000;
+  }
+  blockquote {
+    display: block;
+    border-left: 8px solid #c3ccd9;
+    background: #eef1f5;
+    padding: 18px 26px;
+    margin: 18px 0;
+    color: #444;
+    border-radius: 0 10px 10px 0;
+  }
+  .url {
+    display: block;
+    margin-top: 14px;
+    font-size: 40px;
   }
   a {
     color: #0050b3;
@@ -353,16 +414,17 @@ function buildDigestHtml(text) {
   }
   /* Footer line */
   p:last-child {
+    background: none;
+    padding: 20px 0 0 0;
     color: #555;
     font-size: 30px;
     border-top: 1px solid #ccc;
-    padding-top: 20px;
-    margin-top: 32px;
+    border-radius: 0;
   }
 </style>
 </head>
 <body>
-${paragraphs}
+${paragraphs.replace(/(<\/h1>)/, '$1\n<div class="reading-time">\u9884\u8ba1\u9605\u8bfb ' + minutes + ' \u5206\u949f</div>')}
 </body>
 </html>`;
 }

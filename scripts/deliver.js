@@ -214,6 +214,7 @@ async function killAllChromium(browserInstance) {
 // Guarantees all Chromium processes are killed after each run to prevent
 // memory leaks on long-running servers.
 async function generateDigestImage(text) {
+
   const puppeteer = await import('puppeteer-core');
   const { existsSync } = await import('fs');
 
@@ -444,38 +445,11 @@ async function feishuSendImage(token, chatId, imageKey) {
 // Sends the digest to Feishu as a rendered long-image.
 // Falls back to a compact text card if image generation fails (e.g. no Chromium).
 async function sendFeishu(text, token, chatId) {
-  try {
-    const imageBuffer = await generateDigestImage(text);
-    const imageKey = await feishuUploadImage(token, imageBuffer);
-    await feishuSendImage(token, chatId, imageKey);
-  } catch (imgErr) {
-    console.error(`[feishu] Image delivery failed, falling back to text card: ${imgErr.message}`);
-    // Fallback: compact card with the first portion of the digest
-    const card = {
-      config: { wide_screen_mode: true },
-      header: {
-        title: { tag: 'plain_text', content: '📰 AI Builders Digest' },
-        template: 'blue'
-      },
-      elements: [{ tag: 'markdown', content: text.slice(0, 25000) }]
-    };
-    const res = await fetch(
-      'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          receive_id: chatId,
-          msg_type: 'interactive',
-          content: JSON.stringify(card)
-        })
-      }
-    );
-    if (!res.ok) throw new Error('Feishu fallback send failed');
-  }
+  // Image-only delivery: render a long image. If rendering or upload fails,
+  // abort without sending anything (no text-card fallback).
+  const imageBuffer = await generateDigestImage(text);
+  const imageKey = await feishuUploadImage(token, imageBuffer);
+  await feishuSendImage(token, chatId, imageKey);
 }
 
 // -- Main --------------------------------------------------------------------
